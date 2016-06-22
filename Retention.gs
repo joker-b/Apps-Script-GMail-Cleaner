@@ -55,21 +55,18 @@ var _gDebug = false;
 // never delete messages with these labels....
 var Immortals = {};
 
-// doc keys for the docs logfile
-var LOG_DOC_ID = 'the_url_key_for_the_retention_log_file__here';
-
-// key for the control spreadsheet if the script is running standalone.
-//    not needed if the script is directly attached to the spreadshhet script editor
-var CONTROL_ID = 'the_url_key_for_the_control_spreadsheet_here';
+// doc keys for the control spreadsheet and the text logfile
+var CONTROL_ID = 'the_url_key_for_the_control_spreadsheet_here'; // optional -- we may be attached to the current doc
+var LOG_DOC_ID = 'the_url_key_for_the_retention_log_file__here'; // also optional?
 
 //
 //
 //
-function _logUpdate_(daysBack,daysArchive,LogPar,nRemoved,nArchived) {
+function _logUpdate_(daysBack,daysArchive,LogPar,nRemoved,nArchived,nForever,pretrash) {
   'use strict';
-  if ((nRemoved+nArchived) > 0) {
-    var msg = ('  Removed ' + nRemoved + ' items ' + daysBack + '+ days old');
-    msg = (msg + ', archived ' + nArchived + ' (' + daysArchive + '+ days).');
+  if ((nRemoved+nArchived+pretrash) > 0) {
+    var msg = ('  Removed ' + nRemoved + '/' + pretrash + ' items ' + daysBack + '+ days old');
+    msg = (msg + ', archived ' + nArchived + ' (' + daysArchive + '+ days), '+nForever+' immortals');
     LogPar.appendText(msg);
   }
 }
@@ -104,7 +101,9 @@ function _applyRetention_(labelName,daysBack,ProtectUnread,ProtectRead,ProtectSt
   //Logger.log(logMsg);
   var nRemoved = 0;
   var nArchived = 0;
+  var nForever = 0;
   var operations = 0;
+  var pretrash = 0;
   var maxThreads = DEFAULT.MAX_THREADS;
   var label;
   try {
@@ -144,6 +143,10 @@ function _applyRetention_(labelName,daysBack,ProtectUnread,ProtectRead,ProtectSt
     }
     for (i = 0; i < threads.length; i += 1) {
       msgThread = threads[i];
+      if (msgThread.isInTrash()) {
+        pretrash += 1;
+        continue;
+      }
       if (ProtectStarred && msgThread.hasStarredMessages()) {
         continue;
       }
@@ -155,6 +158,7 @@ function _applyRetention_(labelName,daysBack,ProtectUnread,ProtectRead,ProtectSt
         continue;
       }
       if (_hasImmortality_(msgThread)) {
+        nForever += 1;
         continue;
       }
       lastMsgDay = Math.round(msgThread.getLastMessageDate().getTime()/millisecsPerDay);
@@ -204,7 +208,7 @@ function _applyRetention_(labelName,daysBack,ProtectUnread,ProtectRead,ProtectSt
     }
   }
   if ((nRemoved+nArchived) > 0) {
-    _logUpdate_(daysBack,daysArchive,LogPar,nRemoved,nArchived);
+    _logUpdate_(daysBack,daysArchive,LogPar,nRemoved,nArchived,nForever,pretrash);
   } else {
     LogPar.removeFromParent(); // don't log no-ops
   }
@@ -237,7 +241,7 @@ function retentionRulesMain() {
     logDoc.appendParagraph('(end of log file)');
   }
   var now = new Date();
-  var par = logDoc.insertParagraph(0, 'Retention '+(_gDebug?'TEST ':'Log ')+now);
+  var par = logDoc.insertParagraph(0, 'Retention '+(_gDebug?'TEST ':'Log ')+now.toLocaleString());
   par.setHeading(DocumentApp.ParagraphHeading.HEADING3);
   var ss = ssDoc.getActiveSheet();
   var lc = ss.getLastColumn();
