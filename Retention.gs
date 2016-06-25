@@ -19,11 +19,11 @@
 //   is ignored.
 //
 // To define retention rules, create the control spreadsheet with these column headers:
-//  Label  NumDays ProtectUnread ProtectRead ProtectStarred ProtectImportant daysArchive
+//  Label  NumDays Protect_Unread Protect_Read Protect_Starred Protect_Important days_Archive
 // and then fill in the rows appropriately. The boolean values for each row can
 // be blank (don't protect) or 1 (do protect).
 //
-// if both ProtectUnread and ProtectRead are true, this label goes into a special
+// if both Protect_Unread and Protect_Read are true, this label goes into a special
 //    "always protect" category
 //
 // Enter the Google key (part of the url) in the SpreadsheetApp.openById(id) function found below.
@@ -62,12 +62,36 @@ var LOG_DOC_ID = 'the_url_key_for_the_retention_log_file__here'; // also optiona
 //
 //
 //
-function _logUpdate_(daysBack,daysArchive,LogPar,nRemoved,nArchived,nForever,pretrash) {
+function _logUpdate_(Rule,LogLine,counts) {
   'use strict';
-  if ((nRemoved+nArchived+pretrash) > 0) {
-    var msg = ('  Removed ' + nRemoved + '/' + pretrash + ' items ' + daysBack + '+ days old');
-    msg = (msg + ', archived ' + nArchived + ' (' + daysArchive + '+ days), '+nForever+' immortals');
-    LogPar.appendText(msg);
+  if ((counts.nRemoved+counts.nArchived+counts.pretrash) > 0) {
+    var msg = (',  Removed ' + counts.nRemoved)
+    if (counts.pretrash > 0) {
+       msg = (msg + '(/' + counts.pretrash + ')');
+    }
+    msg = (msg + ' items >' + Rule.days + '+ days old');
+    if (counts.nArchived > 0) {
+      msg = (msg + ', archived ' + counts.nArchived + ' ( >' + Rule.daysArch + ' days)');
+    }
+    if (counts.nForever > 0) {
+      msg = (msg + ', '+counts.nForever+' immortal');
+    }
+    if (counts.nUnread > 0) {
+      msg = (msg + ', '+counts.nUnread+' unread');
+    }
+    if (counts.nUnchanged > 0) {
+      msg = (msg + ', '+counts.nUnchanged+' protected');
+    }
+    if (counts.nStarSafe > 0) {
+      msg = (msg + ', '+counts.nStarSafe+'*');
+    }
+    if (counts.nImpSafe > 0) {
+      msg = (msg + ', '+counts.nImpSafe+'Imp');
+    }
+    if (_gDebug) {
+      Logger.log(msg);
+    }
+    LogLine.appendText(msg);
   }
 }
 
@@ -83,9 +107,9 @@ function _hasImmortality_(MsgThread) {
   for (var ml in labs) {
     var n = labs[ml].getName();
     if (n in Immortals) {
-      if (_gDebug) {
-        Logger.log('Msg "'+MsgThread.getFirstMessageSubject()+'" is immortal: '+n);
-      }
+      // if (_gDebug) {
+      //   Logger.log('Msg "'+MsgThread.getFirstMessageSubject()+'" is immortal: '+n);
+      // }
       return true;
     }
   }
@@ -95,78 +119,99 @@ function _hasImmortality_(MsgThread) {
 //
 // Apply retention rules to a single label
 //
-function _applyRetention_(labelName,daysBack,ProtectUnread,ProtectRead,ProtectStarred,ProtectImportant,daysArchive,LogPar) {
+function _applyRetention_(LabelName,Rule,LogLine) {
   'use strict';
-  //var logMsg = ('applyRetention("'+labelName+'",'+daysBack+','+ProtectUnread+','+ProtectRead+','+ProtectStarred+','+ProtectImportant+','+daysArchive+',...)');
+  //var logMsg = ('applyRetention("'+LabelName+'",'+Rule.days+','+Rule.pUnread+','+Rule.pRead+','+Rule.pStar+','+Rule.pImp+','+Rule.daysArch+',...)');
   //Logger.log(logMsg);
-  var nRemoved = 0;
-  var nArchived = 0;
-  var nForever = 0;
-  var operations = 0;
-  var pretrash = 0;
+  var counts = {
+    nRemoved: 0,
+    nArchived: 0,
+    nForever: 0,
+    nStarSafe: 0,
+    nImpSafe: 0,
+    nUnchanged: 0,
+    nUnread: 0,
+    operations: 0,
+    pretrash: 0,
+  }
   var maxThreads = DEFAULT.MAX_THREADS;
   var label;
   try {
-    label = GmailApp.getUserLabelByName(labelName);
+    label = GmailApp.getUserLabelByName(LabelName);
   } catch(err) {
-    Logger.log('Too many mail calls for "'+labelName+'"? "'+err.message+'"');
-    LogPar.appendText(' read error');
+    Logger.log('Too many mail calls for "'+LabelName+'"? "'+err.message+'"');
+    LogLine.appendText(' read error');
     return -1; // error
   }
-  if (label === undefined) {
-    Logger.log('Could not find label "'+labelName+'"');
-    LogPar.appendText('No such label available');
-    LogPar.setForegroundColor('#800000');
-    LogPar.setBold(true);
-    return nRemoved;
+  if (! label) {
+    Logger.log('Could not find label "'+LabelName+'" - check your spreadsheet');
+    LogLine.appendText('No such label available: "'+LabelName+'" - check your definitions!');
+    LogLine.setForegroundColor('#800000');
+    LogLine.setBold(true);
+    return counts.nRemoved;
   }
   var now = new Date();
   var millisecsPerDay = 1000 * 60 * 60 * 24;
   var nowDay = Math.round(now.getTime() / millisecsPerDay);
-  var cutoff = nowDay - daysBack;
-  var cutoffArch = nowDay - daysArchive;
-  if (daysArchive <= 0) { // hack to avoid archiving 
+  var cutoff = nowDay - Rule.days;
+  var cutoffArch = nowDay - Rule.daysArch;
+  if (Rule.daysArch <= 0) { // hack to avoid archiving 
     cutoffArch = cutoff - 1; // one day before the cutoff
   }
   var startThread = 0;
   var pending = true;
-  var i, msgThread, lastMsgDay, unrd;
+  var i, msgThread, lastMsgDay, unrd, okayToDelete;
+  var passes = 0;
   while (pending) {
     var threads = label.getThreads(startThread,maxThreads); // seems to max at 500 - TO-DO: use getThreads(start,max) to fetch more past 500
     var nThreads = threads.length;
     if (nThreads === maxThreads) {
-      startThread = startThread + maxThreads; // for the next cycle
-      LogPar.appendText('>');
+      if (_gDebug && (passes > 2)) {
+        LogLine.appendText(nThreads+' (+'+startThread+') initial test items');
+        pending = false;
+      } else {
+        startThread = startThread + maxThreads; // for the next cycle
+        LogLine.appendText('>');
+      }
     } else {
-      LogPar.appendText((nThreads+startThread)+' initial items');
+      LogLine.appendText(nThreads+' (+'+startThread+') initial items');
       pending = false;
     }
+    passes += 1;
     for (i = 0; i < threads.length; i += 1) {
       msgThread = threads[i];
+      okayToDelete = true;
       if (msgThread.isInTrash()) {
-        pretrash += 1;
+        counts.pretrash += 1;
         continue;
       }
-      if (ProtectStarred && msgThread.hasStarredMessages()) {
+      if (Rule.pStar && msgThread.hasStarredMessages()) {
+        counts.nStarSafe += 1;
         continue;
       }
-      if (ProtectImportant && msgThread.isImportant()) {
+      if (Rule.pImp && msgThread.isImportant()) {
+        counts.nImpSafe += 1;
         continue;
       }
       unrd = msgThread.isUnread();
-      if ((ProtectUnread && unrd) || (ProtectRead && (!unrd))) {
+      if (Rule.pUnread && unrd) {
+        counts.nUnread += 1;
+        continue;
+      }
+      if (Rule.pRead && !unrd) {
+        counts.nUnchanged += 1;
         continue;
       }
       if (_hasImmortality_(msgThread)) {
-        nForever += 1;
+        okayToDelete = false;
         continue;
       }
       lastMsgDay = Math.round(msgThread.getLastMessageDate().getTime()/millisecsPerDay);
       if (lastMsgDay > cutoff) {  // old enough?
         if (lastMsgDay <= cutoffArch) { // within archive range?
            if (msgThread.isInInbox()) {
-             nArchived += 1;
-             operations += 1;
+             counts.nArchived += 1;
+             counts.operations += 1;
              try {
                 if (_gDebug) {
                   Logger.log('Archive "'+msgThread.getFirstMessageSubject()+'"');
@@ -174,14 +219,14 @@ function _applyRetention_(labelName,daysBack,ProtectUnread,ProtectRead,ProtectSt
                   msgThread.moveToArchive();
                 }
              } catch(err) {
-                Logger.log('Too much archiving for "'+labelName+'"? "'+err.message+'"');
-                LogPar.appendText('('+(startThread+nThreads)+') ');
-                _logUpdate_(daysBack,daysArchive,LogPar,nRemoved,nArchived);
-                LogPar.appendText(' Archive error');
+                Logger.log('Too much archiving for "'+LabelName+'"? "'+err.message+'"');
+                LogLine.appendText('('+(startThread+nThreads)+') ');
+                _logUpdate_(Rule,LogLine,counts);
+                LogLine.appendText(' Archive error');
                 return -1; // error
              }
            }
-        } else { // not within archive range, so bye bye
+        } else if (okayToDelete) { // not within archive range, so bye bye
           if (! msgThread.isInTrash()) {
             try {
               if (_gDebug) {
@@ -189,30 +234,77 @@ function _applyRetention_(labelName,daysBack,ProtectUnread,ProtectRead,ProtectSt
               } else {
                 msgThread.moveToTrash();
               }
-              operations += 1;
-              nRemoved += 1;
+              counts.nRemoved += 1;
+              counts.operations += 1;
             } catch(err) {
-              Logger.log('Too much trash for "'+labelName+'"? "'+err.message+'"');
-              LogPar.appendText('('+(startThread+nThreads)+') ');
-              _logUpdate_(daysBack,daysArchive,LogPar,nRemoved,nArchived);
-              LogPar.appendText(' Trash error');
+              Logger.log('Too much trash for "'+LabelName+'"? "'+err.message+'"');
+              LogLine.appendText('('+(startThread+'->'+nThreads)+') ');
+              _logUpdate_(Rule,LogLine,counts);
+              LogLine.appendText(' Trash error');
               return -1; // error
             }
           }
+        } else {
+          nForever += 1;
         }
+      } else {
+         counts.nUnchanged += 1;
       }
-      if (operations >= 100) {
-        // _logUpdate_(daysBack,daysArchive,LogPar,nRemoved,nArchived);
-        operations = 0;
+      if (counts.operations >= 100) {
+        counts.operations = 0;
       }
     }
   }
-  if ((nRemoved+nArchived) > 0) {
-    _logUpdate_(daysBack,daysArchive,LogPar,nRemoved,nArchived,nForever,pretrash);
+  if ((counts.nRemoved+counts.nArchived) > 0) {
+    _logUpdate_(Rule,LogLine,counts);
   } else {
-    LogPar.removeFromParent(); // don't log no-ops
+    LogLine.removeFromParent(); // don't log no-ops
   }
-  return (nRemoved+nArchived);
+  return (counts.nRemoved+counts.nArchived);
+}
+
+//
+// read entire sheet, extract all rules into an object. This lets us safely manage duplicates
+//
+function _buildRules_(SsDoc) {
+  'use strict';
+  var rulesObject = {};
+  var ss = SsDoc.getActiveSheet();
+  var lc = ss.getLastColumn();
+  var lr = ss.getLastRow();
+  var v = ss.getRange(2,1,lr-1,lc).getValues(); // read whole spreadsheet as 2D array
+  for (i=1; i<(lr-1); i+=1) {
+    var name = v[i][0];
+    if (name == '') {
+      continue;
+    }
+    var days = (v[i][1] !== '') ? parseInt(v[i][1]) : DEFAULT.DAYS;
+    if (days < DEFAULT.MINIMUM_DAYS) {
+      Logger.log('Odd rule '+i+' ('+labelName+') had length of only '+days+' days. Skipping');
+      continue;
+    }
+    if (rulesObject[name] === undefined) {
+      rulesObject[name] = {
+        days: days,
+        pUnread:  (v[i][2] !== '') ? (parseInt(v[i][2]) !== 0) : DEFAULT.PROTECT_UNREAD,
+        pRead:    (v[i][3] !== '') ? (parseInt(v[i][3]) !== 0) : DEFAULT.PROTECT_READ,
+        pStar:    (v[i][4] !== '') ? (parseInt(v[i][4]) !== 0) : DEFAULT.PROTECT_STARRED,
+        pImp:     (v[i][5] !== '') ? (parseInt(v[i][5]) !== 0) : DEFAULT.PROTECT_IMPORTANT,
+        daysArch: (v[i][6] !== '') ?  parseInt(v[i][6]) : 0,
+      }
+    } else {
+        Logger.log('Label "'+name+'" is duplicated, opting for the least damage');
+        rulesObject[name].days = Math.max(rulesObject[name].days, days),
+        rulesObject[name].pUnread |=  ((v[i][2] !== '') ? (parseInt(v[i][2]) !== 0) : DEFAULT.PROTECT_UNREAD);
+        rulesObject[name].pRead |=    ((v[i][3] !== '') ? (parseInt(v[i][3]) !== 0) : DEFAULT.PROTECT_READ);
+        rulesObject[name].pStar |=    ((v[i][4] !== '') ? (parseInt(v[i][4]) !== 0) : DEFAULT.PROTECT_STARRED);
+        rulesObject[name].pImp |=     ((v[i][5] !== '') ? (parseInt(v[i][5]) !== 0) : DEFAULT.PROTECT_IMPORTANT);
+        rulesObject[name].daysArch = Math.max(rulesObject[name].daysArch, ((v[i][6] !== '') ?  parseInt(v[i][6]) : 0));
+   }
+   rulesObject[name].immortal = ((rulesObject[name].pUnread && rulesObject[name].pRead));
+   Immortals[name] = true;
+  }
+  return rulesObject;
 }
 
 //
@@ -243,72 +335,55 @@ function retentionRulesMain() {
   var now = new Date();
   var par = logDoc.insertParagraph(0, 'Retention '+(_gDebug?'TEST ':'Log ')+now.toLocaleString());
   par.setHeading(DocumentApp.ParagraphHeading.HEADING3);
-  var ss = ssDoc.getActiveSheet();
-  var lc = ss.getLastColumn();
-  var lr = ss.getLastRow();
-  var v = ss.getRange(2,1,lr-1,lc).getValues(); // read whole spreadsheet
-  var i, days, daysArch, pUnread, pRead, pStar, pImp, nItems;
-  var pars = [];
-  for (i=0; i<(lr-1); i+=1) {
-    pars[i] = logDoc.insertListItem(i+1, '"'+v[i][0]+'": ');
-    pars[i].setSpacingBefore(0);
-    pars[i].setSpacingAfter(0);
-    pars[i].setFontSize(8);
-    pars[i].setBold(false);
+  var rules = _buildRules_(ssDoc);
+  var labels = Object.keys(rules);
+  labels.sort();
+  if (_gDebug) {
+    Logger.log('Found '+labels.length+' unique labels');
   }
-  for (i=1; i<(lr-1); i+=1) {
-    pars[i].setListId(pars[0]);
+  // from here...
+  var i, j,  nItems;
+  var listItems = [];
+  for (i in labels) {
+    j = labels.length - 1 - i;
+    //listItems[i] = logDoc.insertListItem(i+1, (labels[i]+': ') );
+    listItems[j] = logDoc.insertListItem(1, (labels[j]+': ') );
+    listItems[j].setSpacingBefore(0);
+    listItems[j].setSpacingAfter(0);
+    listItems[j].setFontSize(8);
+    listItems[j].setBold(false);
+    if (_gDebug) {
+      Logger.log(labels[i]+' '+i);
+    }
+  }
+  for (i in labels) {
+    if (i > 0) {
+      listItems[i].setListId(listItems[0]);
+    }
   }
   logDoc.insertHorizontalRule(i+1);
   var earlyHalt = false;
-  for (i=0; i<(lr-1); i+=1) {
+  for (i in labels) {
     if (earlyHalt) {
-      pars[i].removeFromParent();
+      if (_gDebug) {
+        Logger.log('wrap '+labels[i]);
+      }
+      listItems[i].removeFromParent();
       continue;
     }
-    if (v[i][0] === '') {
-      continue;
-    }
-    pUnread = (v[i][2] !== '') ? (parseInt(v[i][2]) !== 0) : DEFAULT.PROTECT_UNREAD;
-    pRead   = (v[i][3] !== '') ? (parseInt(v[i][3]) !== 0) : DEFAULT.PROTECT_READ;
-    if (pUnread && pRead) {
-      Immortals[v[i][0]] = true;
-    }
- }
-  for (i=0; i<(lr-1); i+=1) {
-    if (earlyHalt) {
-      pars[i].removeFromParent();
-      continue;
-    }
-    var label = v[i][0];
-    if (label in Immortals) {
+    var label = labels[i];
+    var rule = rules[label];
+    if (rule.immortal) {
       if (_gDebug) {
         Logger.log('Never delete "'+label+'" items');
       }
-    }
-    if (label === '') {
-      Logger.log('Skipping item '+i+': No Label');
       continue;
     }
-    days = (v[i][1] !== '') ? parseInt(v[i][1]) : DEFAULT.DAYS;
-    if (days < DEFAULT.MINIMUM_DAYS) {
-      Logger.log('Hmm, item '+i+' ('+label+') had length of only '+days+' days. Skipping');
-      continue;
-    }
-    //for (var j=2; j<= 6; j+=1) {
-    //  Logger.log('Item '+j+': "'+v[i][j]+'" is ('+parseInt(v[i][j])+')');
-    //}
-    pUnread  = (v[i][2] !== '') ? (parseInt(v[i][2]) !== 0) : DEFAULT.PROTECT_UNREAD;
-    pRead    = (v[i][3] !== '') ? (parseInt(v[i][3]) !== 0) : DEFAULT.PROTECT_READ;
-    pStar    = (v[i][4] !== '') ? (parseInt(v[i][4]) !== 0) : DEFAULT.PROTECT_STARRED;
-    pImp     = (v[i][5] !== '') ? (parseInt(v[i][5]) !== 0) : DEFAULT.PROTECT_IMPORTANT;
-    daysArch = (v[i][6] !== '') ?  parseInt(v[i][6]) : 0;  
-    //Logger.log(i+': "'+label+'":'+days+' days, unread:'+pUnread+', read:'+pRead+', star:'+pStar+', impo:'+pImp+', daysArch:'+daysArch);
     try {
-      nItems = _applyRetention_(label,days,pUnread,pRead,pStar,pImp,daysArch,pars[i]);
+      nItems = _applyRetention_(label, rule, listItems[i]);
     } catch(err) {
       Logger.log('Error for "'+label+'"? "'+err.message+'"');
-      pars[i].appendText(' Error "'+err.message+'"');
+      listItems[i].appendText(' Error "'+err.message+'"');
       nItems = -1;
     }
     if (nItems < 0) { // error
@@ -323,7 +398,7 @@ function retentionRulesMain() {
 function testRules() {
   'use strict';
   _gDebug = true;
-  DEFAULT.MAX_THREADS = 40;
+  // DEFAULT.MAX_THREADS = 40;
   retentionRulesMain();
 }
 
