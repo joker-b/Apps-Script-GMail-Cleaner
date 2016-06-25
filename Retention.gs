@@ -123,6 +123,13 @@ function _applyRetention_(LabelName,Rule,LogLine) {
   'use strict';
   //var logMsg = ('applyRetention("'+LabelName+'",'+Rule.days+','+Rule.pUnread+','+Rule.pRead+','+Rule.pStar+','+Rule.pImp+','+Rule.daysArch+',...)');
   //Logger.log(logMsg);
+  if (Rule.immortal) {
+    if (_gDebug) {
+      Logger.log('Never delete "'+LabelName+'" items');
+    }
+    LogLine.appendText('-');
+    return 0;
+  }
   var counts = {
     nRemoved: 0,
     nArchived: 0,
@@ -255,12 +262,13 @@ function _applyRetention_(LabelName,Rule,LogLine) {
       }
     }
   }
-  if ((counts.nRemoved+counts.nArchived) > 0) {
+  var totalAltered = counts.nRemoved+counts.nArchived;
+  if (totalAltered > 0) {
     _logUpdate_(Rule,LogLine,counts);
   } else {
     LogLine.removeFromParent(); // don't log no-ops
   }
-  return (counts.nRemoved+counts.nArchived);
+  return totalAltered;
 }
 
 //
@@ -307,40 +315,58 @@ function _buildRules_(SsDoc) {
   return rulesObject;
 }
 
+function _getSSRules_(DocID) // DocID may be ignored
+{
+  var ssDoc = SpreadsheetApp.getActiveSpreadsheet();
+  if (ssDoc === null) {
+    try {
+      ssDoc = SpreadsheetApp.openById(DocID);
+    } catch(err) {
+      Logger.log('Error: Unable to open the retention-rules spreadsheet: "'+err.message+'"');
+      return null;
+    }
+  }
+  return _buildRules_(ssDoc);
+}
+
+function _getLogDoc_(DocID) {
+  var logDoc;
+  try {
+    logDoc = DocumentApp.openById(DocID);
+  } catch(err) {
+    Logger.log('Error: Unable to open the retention log file: "'+err.message+'"');
+    return null;
+  }
+  if (logDoc.getNumChildren() < 1) {
+    logDoc.appendParagraph('(end of log file)');
+  }
+  return logDoc;
+}
+
 //
 // This is the entry point for the whole script. Be sure to set the two doc keys
 //   correctly before beginning!
 //
 function retentionRulesMain() {
   'use strict';
-  var ssDoc, logDoc;
-  ssDoc = SpreadsheetApp.getActiveSpreadsheet();
-  if (ssDoc === null) {
-    try {
-      ssDoc = SpreadsheetApp.openById(CONTROL_ID);
-    } catch(err) {
-      Logger.log('Error: Unable to open the retention-rules spreadsheet: "'+err.message+'"');
-      return;
-    }
-  }
-  try {
-    logDoc = DocumentApp.openById(LOG_DOC_ID);
-  } catch(err) {
-    Logger.log('Error: Unable to open the retention log file: "'+err.message+'"');
+  var rules = _getSSRules_(CONTROL_ID);
+  if (!rules) {
     return;
   }
-  if (logDoc.getNumChildren() < 1) {
-    logDoc.appendParagraph('(end of log file)');
-  }
-  var now = new Date();
-  var par = logDoc.insertParagraph(0, 'Retention '+(_gDebug?'TEST ':'Log ')+now.toLocaleString());
-  par.setHeading(DocumentApp.ParagraphHeading.HEADING3);
-  var rules = _buildRules_(ssDoc);
   var labels = Object.keys(rules);
-  labels.sort();
   if (_gDebug) {
     Logger.log('Found '+labels.length+' unique labels');
   }
+  labels.sort();
+  //
+  var logDoc = _getLogDoc_(LOG_DOC_ID);
+  if (!logDoc) {
+    return;
+  }
+  var now = new Date();
+  var title = logDoc.insertParagraph(0, 'Retention '+(_gDebug?'TEST ':'Log ')+now.toLocaleString());
+  title.setHeading(DocumentApp.ParagraphHeading.HEADING3);
+  logDoc.insertHorizontalRule(1);
   // from here...
   var i, j,  nItems;
   var listItems = [];
@@ -361,7 +387,6 @@ function retentionRulesMain() {
       listItems[i].setListId(listItems[0]);
     }
   }
-  logDoc.insertHorizontalRule(i+1);
   var earlyHalt = false;
   for (i in labels) {
     if (earlyHalt) {
@@ -371,18 +396,11 @@ function retentionRulesMain() {
       listItems[i].removeFromParent();
       continue;
     }
-    var label = labels[i];
-    var rule = rules[label];
-    if (rule.immortal) {
-      if (_gDebug) {
-        Logger.log('Never delete "'+label+'" items');
-      }
-      continue;
-    }
+    var labelName = labels[i];
     try {
-      nItems = _applyRetention_(label, rule, listItems[i]);
+      nItems = _applyRetention_(labelName, rules[labelName], listItems[i]);
     } catch(err) {
-      Logger.log('Error for "'+label+'"? "'+err.message+'"');
+      Logger.log('Error for "'+labelName+'"? "'+err.message+'"');
       listItems[i].appendText(' Error "'+err.message+'"');
       nItems = -1;
     }
