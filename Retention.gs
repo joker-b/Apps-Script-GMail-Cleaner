@@ -12,11 +12,20 @@
 //  as the function. Every few hours or once per day should be plenty for most people...
 //  you may want to run it more often just at first during the initial "catch-up phase."
 //
-// This script uses two Google Drive documents: a spreadsheet containing rules for
-//   email retention, and a simple doc for storing logs of actions the script has taken.
-//   You will need to create these two drive docs and pass their keys into the script. This script
-//   can be attached to the control spreadsheet, in which case the spreedsheet FileID (aka ControlID)
-//   is ignored.
+// To use this, create a spreadsheet containing retention rules (a sample is provided), and
+// an empty Google Docs text document which will be used to store the log data from Retention.gs.
+// With the spreadsheet app open, select "Tools->Script Editor..." and copy-paste to replace the
+// contents the edit window with the code here in Retention.gs.
+// 
+// Once all the pieces are ready, you will need to get the GDocs doc ID for the log document.
+// The quickest way to get this ID is to open the doc and check the URL -- extract the long "base64"
+// string from it, e.g.
+//       https://docs.google.com/document/d/3ckYOu8kuIfBzbu-Dtu9XwGHUnUJG32PK7wHe5xMv3VG/
+// has document id 3ckYOu8kuIfBzbu-Dtu9XwGHUnUJG32PK7wHe5xMv3VG
+// 
+// Paste this ID into your copy of the script as `LOG_DOC_ID` -- just near the top. Save.
+// 
+// To test your rules, run `testRules` -- to actually start archiving, run `retentionRulesMain`
 //
 // To define retention rules, create the control spreadsheet with these column headers:
 //  Label  NumDays Protect_Unread Protect_Read Protect_Starred Protect_Important days_Archive
@@ -56,12 +65,11 @@ var _gDebug = false;
 var Immortals = {};
 
 // doc keys for the control spreadsheet and the text logfile
-var CONTROL_ID = 'the_url_key_for_the_optional_control_spreadsheet_here'; // optional -- we may be attached to the current doc
 var LOG_DOC_ID = 'the_url_key_for_the_retention_log_file__here'; // also optional?
-
+// var CONTROL_ID = null; // optional -- ID for alternate spreadsheet
 
 // utility: shuffle an array in place
-function _shuffle_array_(a) {
+function _shuffleArray_(a) {
   'use strict';
     var j, x, i;
     for (i = a.length; i; i -= 1) {
@@ -78,7 +86,7 @@ function _shuffle_array_(a) {
 function _logUpdate_(Rule,counts) {
   'use strict';
   if ((counts.nRemoved+counts.nArchived+counts.pretrash) > 0) {
-    var msg = (',  Removed ' + counts.nRemoved)
+    var msg = (',  Removed ' + counts.nRemoved);
     if (counts.pretrash > 0) {
        msg = (msg + '(/' + counts.pretrash + ')');
     }
@@ -165,7 +173,7 @@ function _applyRetention_(LabelName,Rule) {
     nUnread: 0,
     operations: 0,
     pretrash: 0,
-  }
+  };
   var maxThreads = DEFAULT.MAX_THREADS;
   var label;
   try {
@@ -305,14 +313,14 @@ function _buildRules_(SsDoc) {
   var lc = ss.getLastColumn();
   var lr = ss.getLastRow();
   var v = ss.getRange(2,1,lr-1,lc).getValues(); // read whole spreadsheet as 2D array
-  for (i=1; i<(lr-1); i+=1) {
+  for (var i=1; i<(lr-1); i+=1) {
     var name = v[i][0];
-    if (name == '') {
+    if (name === '') {
       continue;
     }
     var days = (v[i][1] !== '') ? parseInt(v[i][1]) : DEFAULT.DAYS;
     if (days < DEFAULT.MINIMUM_DAYS) {
-      Logger.log('Odd rule '+i+' ('+labelName+') had length of only '+days+' days. Skipping');
+      Logger.log('Odd rule '+i+' ('+name+') had length of only '+days+' days. Skipping');
       continue;
     }
     if (rulesObject[name] === undefined) {
@@ -323,15 +331,16 @@ function _buildRules_(SsDoc) {
         pStar:    (v[i][4] !== '') ? (parseInt(v[i][4]) !== 0) : DEFAULT.PROTECT_STARRED,
         pImp:     (v[i][5] !== '') ? (parseInt(v[i][5]) !== 0) : DEFAULT.PROTECT_IMPORTANT,
         daysArch: (v[i][6] !== '') ?  parseInt(v[i][6]) : 0,
-      }
+      };
     } else {
         Logger.log('Label "'+name+'" is duplicated, opting for the least damage');
-        rulesObject[name].days = Math.max(rulesObject[name].days, days),
-        rulesObject[name].pUnread |=  ((v[i][2] !== '') ? (parseInt(v[i][2]) !== 0) : DEFAULT.PROTECT_UNREAD);
-        rulesObject[name].pRead |=    ((v[i][3] !== '') ? (parseInt(v[i][3]) !== 0) : DEFAULT.PROTECT_READ);
-        rulesObject[name].pStar |=    ((v[i][4] !== '') ? (parseInt(v[i][4]) !== 0) : DEFAULT.PROTECT_STARRED);
-        rulesObject[name].pImp |=     ((v[i][5] !== '') ? (parseInt(v[i][5]) !== 0) : DEFAULT.PROTECT_IMPORTANT);
-        rulesObject[name].daysArch = Math.max(rulesObject[name].daysArch, ((v[i][6] !== '') ?  parseInt(v[i][6]) : 0));
+        var rule = rulesObject[name];
+        rule.days = Math.max(rule.days, days);
+        rule.pUnread = rule.pUnread ||  ((v[i][2] !== '') ? (parseInt(v[i][2]) !== 0) : DEFAULT.PROTECT_UNREAD);
+        rule.pRead   = rule.pRead   ||  ((v[i][3] !== '') ? (parseInt(v[i][3]) !== 0) : DEFAULT.PROTECT_READ);
+        rule.pStar   = rule.pStar   ||  ((v[i][4] !== '') ? (parseInt(v[i][4]) !== 0) : DEFAULT.PROTECT_STARRED);
+        rule.pImp    = rule.pImp    ||  ((v[i][5] !== '') ? (parseInt(v[i][5]) !== 0) : DEFAULT.PROTECT_IMPORTANT);
+        rule.daysArch = Math.max(rule.daysArch, ((v[i][6] !== '') ?  parseInt(v[i][6]) : 0));
    }
    rulesObject[name].immortal = ((rulesObject[name].pUnread && rulesObject[name].pRead));
    Immortals[name] = true;
@@ -339,8 +348,9 @@ function _buildRules_(SsDoc) {
   return rulesObject;
 }
 
-function _getSSRules_(DocID) // DocID may be ignored
+function _getRulesFromSpreadsheet_(DocID) // DocID may be ignored, might be null
 {
+  'use strict';
   var ssDoc = SpreadsheetApp.getActiveSpreadsheet();
   if (ssDoc === null) {
     try {
@@ -354,6 +364,7 @@ function _getSSRules_(DocID) // DocID may be ignored
 }
 
 function _getLogDoc_(DocID) {
+  'use strict';
   var logDoc;
   try {
     logDoc = DocumentApp.openById(DocID);
@@ -374,7 +385,7 @@ function _getLogDoc_(DocID) {
 function retentionRulesMain() {
   'use strict';
   var now = new Date();
-  var rules = _getSSRules_(CONTROL_ID);
+  var rules = _getRulesFromSpreadsheet_((CONTROL_ID===undefined)?null:CONTROL_ID);
   if (!rules) {
     return;
   }
@@ -393,12 +404,10 @@ function retentionRulesMain() {
   logDoc.insertHorizontalRule(1);
   // from here...
   var i, j,  nItems, rule;
-  var listItems = [];
   var firstItem = null;
   for (i in labels) {
     j = labels.length - 1 - i;
     rule = rules[labels[j]];
-    //listItems[i] = logDoc.insertListItem(i+1, (labels[i]+': ') );
     rule.listItem = logDoc.insertListItem(1, (labels[j]+': ') );
     rule.listItem.setSpacingBefore(0);
     rule.listItem.setSpacingAfter(0);
@@ -416,7 +425,7 @@ function retentionRulesMain() {
       rules[labels[i]].listItem.setListId(firstItem);
     }
   }
-  _shuffle_array_(labels);  // randomize
+  _shuffleArray_(labels);  // randomize
   var earlyHalt = false;
   for (i in labels) {
     var labelName = labels[i];
