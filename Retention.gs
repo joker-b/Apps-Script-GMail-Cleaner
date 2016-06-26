@@ -56,7 +56,7 @@ var _gDebug = false;
 var Immortals = {};
 
 // doc keys for the control spreadsheet and the text logfile
-var CONTROL_ID = 'the_url_key_for_the_control_spreadsheet_here'; // optional -- we may be attached to the current doc
+var CONTROL_ID = 'the_url_key_for_the_optional_control_spreadsheet_here'; // optional -- we may be attached to the current doc
 var LOG_DOC_ID = 'the_url_key_for_the_retention_log_file__here'; // also optional?
 
 
@@ -421,6 +421,12 @@ function retentionRulesMain() {
   for (i in labels) {
     var labelName = labels[i];
     rule = rules[labelName];
+    var ruleStart = new Date();
+    if ((ruleStart.getTime()-now.getTime()) > (5*60*1000)) {
+      Logger.log('Not enough time to start on label "'+labelName+'"');
+      logDoc.insertParagraph(1,'(Halted after '+Math.floor(0.5+((ruleStart.getTime()-now.getTime())/1000))+' seconds)');
+      break;
+    }
     if (earlyHalt) {
       if (_gDebug) {
         Logger.log('wrap '+labels[i]);
@@ -449,9 +455,6 @@ function retentionRulesMain() {
 function testRules() {
   'use strict';
   _gDebug = true;
-  // DEFAULT.MAX_THREADS = 40;
-  alert('wow');
-  return;
   retentionRulesMain();
 }
 
